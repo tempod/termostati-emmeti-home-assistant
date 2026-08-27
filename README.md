@@ -171,9 +171,10 @@ riavvii e la sincronizzazione bidirezionale con il pannello.
 
 ## Riferimenti
 
-- [Manuale Innova N273025C](docs/EDA649-20EDB649-ECA644-ECA647.pdf) —
+- [Manuale Innova N273025C](docs/EDA649-EDB649-ECA644-ECA647.pdf) —
   collegamento e registri Modbus dei comandi EDA649, EDB649, ECA644, ECA647
-- [Foto del comando a muro usato in questo progetto](docs/termostato-emmeti.jpg)
+- [Foto del comando a muro (interno) usato in questo progetto](docs/termostato-emmeti-interno.jpg)
+- [Foto del comando a muro (esterno) usato in questo progetto](docs/termostato-emmeti-esterno.jpg)
 - [Documentazione ESPHome — Modbus Controller](https://esphome.io/components/modbus_controller.html)
 
 ## Licenza
