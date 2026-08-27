@@ -175,6 +175,7 @@ riavvii e la sincronizzazione bidirezionale con il pannello.
   collegamento e registri Modbus dei comandi EDA649, EDB649, ECA644, ECA647
 - [Foto del comando a muro (interno) usato in questo progetto](docs/termostato-emmeti-interno.jpg)
 - [Foto del comando a muro (esterno) usato in questo progetto](docs/termostato-emmeti-esterno.jpg)
+- [Scheda su Home Assistant](docs/termostato-salotto-ha.jpg)
 - [Documentazione ESPHome — Modbus Controller](https://esphome.io/components/modbus_controller.html)
 
 ## Licenza
