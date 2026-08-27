@@ -1,17 +1,21 @@
-# Fancoil Innova/Airleaf in Home Assistant via ESPHome
+# Fancoil Emmeti in Home Assistant via ESPHome
 
-Integrazione di fancoil Innova (comandi a muro **EDA649 / EDB649**) in Home
-Assistant tramite ESPHome, usando un ESP8266 come master Modbus RTU su RS485.
+Integrazione di fancoil **Emmeti** in Home Assistant tramite ESPHome, usando un
+ESP8266 come master Modbus RTU su RS485 verso il comando a muro.
 
 Il pannello a muro **resta pienamente utilizzabile**: questa configurazione lo
 affianca invece di sostituirlo, e i due lati restano allineati in entrambe le
 direzioni. Quello che si fa dal pannello compare in Home Assistant, e viceversa.
 
+> **Nota sulle marche.** Lo stesso comando a muro viene rivenduto da diversi
+> produttori con codici e marchi differenti, e il protocollo Modbus è con ogni
+> probabilità identico. Questo codice però è stato provato **solo su Emmeti**:
+> su altri marchi dovrebbe funzionare, ma non è verificato.
+
 ## Come è fatto
 
 ```
-Home Assistant  ──WiFi──  D1 mini (ESPHome)  ──RS485──  EDA649/EDB649  ──  fancoil
-                                                         (comando a muro)
+Home Assistant  ──WiFi──  D1 mini (ESPHome)  ──RS485──  comando a muro  ──  fancoil
 ```
 
 L'ESP non parla direttamente con la scheda del fancoil, ma con il comando a
@@ -158,17 +162,18 @@ di volta in volta quello attivo secondo la stagione corrente.
 
 Il punto di partenza di questo progetto è
 [jjdejong/esphome-airleaf](https://github.com/jjdejong/esphome-airleaf), un
-controller ESPHome per fancoil Innova Airleaf collegati alla scheda ECA644.
-Grazie all'autore per il lavoro di mappatura iniziale dei registri.
+controller ESPHome per fancoil Innova Airleaf. Grazie all'autore per il lavoro di
+mappatura iniziale dei registri.
 
-Questa versione è pensata per il collegamento tramite comando a muro EDA649 /
-EDB649 e aggiunge la gestione a bit del registro 201, la persistenza dello stato
-attraverso i riavvii e la sincronizzazione bidirezionale con il pannello.
+Questa versione è pensata per il collegamento tramite comando a muro e aggiunge
+la gestione a bit del registro 201, la persistenza dello stato attraverso i
+riavvii e la sincronizzazione bidirezionale con il pannello.
 
 ## Riferimenti
 
-- Manuale Innova N273025C — collegamento e registri Modbus dei comandi
-  EDA649, EDB649, ECA644, ECA647
+- [Manuale Innova N273025C](docs/EDA649-20EDB649-ECA644-ECA647.pdf) —
+  collegamento e registri Modbus dei comandi EDA649, EDB649, ECA644, ECA647
+- [Foto del comando a muro usato in questo progetto](docs/termostato-emmeti.jpg)
 - [Documentazione ESPHome — Modbus Controller](https://esphome.io/components/modbus_controller.html)
 
 ## Licenza
