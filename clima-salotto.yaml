@@ -1,0 +1,657 @@
+# =============================================================================
+# Termostato fancoil Innova/Airleaf su Home Assistant tramite ESPHome
+# =============================================================================
+# Un D1 mini (ESP8266) fa da master Modbus RTU su RS485 verso il comando a muro
+# EDA649/EDB649, che a sua volta pilota il fancoil. Il pannello resta pienamente
+# utilizzabile: questa configurazione lo affianca, non lo sostituisce, e i due
+# restano allineati in entrambe le direzioni.
+#
+# Nota sul comportamento del pannello: quando il master Modbus sparisce (cioe' ad
+# ogni riavvio dell'ESP) il pannello esce da solo dallo standby e azzera la
+# velocita' ventola. Lo stato voluto va quindi conservato nella flash dell'ESP e
+# ri-applicato al primo contatto utile. Vedi i globals in fondo al file.
+# =============================================================================
+
+# Unici valori da cambiare per replicare la configurazione su un altro fancoil.
+substitutions:
+  devicename: clima-salotto
+  ip: 192.168.1.152
+  # Intervallo di polling Modbus.
+  upti: 3s
+  # Indirizzo Modbus del pannello (ogni pannello e' solo sul proprio bus).
+  adr: 0x1
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${devicename}
+
+esp8266:
+  board: d1_mini
+
+logger:
+  # La UART hardware serve al bus RS485: nessun log su seriale.
+  baud_rate: 0
+
+# Log via rete verso il Syslog Receiver di Home Assistant. Da scommentare solo
+# quando serve diagnosticare: la porta e' univoca per dispositivo (5 + ultimo
+# ottetto dell'IP) cosi' ogni termostato finisce in un'istanza separata.
+#syslog
+#time:
+#  platform: sntp
+#udp:
+#  addresses: 192.168.1.249
+#syslog:
+#  port: 5152
+#syslog
+
+api:
+  encryption:
+    key: !secret encryptionkey
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  # IP statico: serve al syslog e rende prevedibile l'indirizzo per l'OTA.
+  manual_ip:
+    static_ip: ${ip}
+    gateway: 192.168.1.1
+    subnet: 255.255.255.0
+  # Hotspot di emergenza se il WiFi non e' raggiungibile.
+  ap:
+    ssid: "$devicename Fallback Hotspot"
+    password: !secret wifi_password_fallback
+
+captive_portal:
+
+web_server:
+  port: 80
+
+# --- Bus RS485 verso il comando a muro ---------------------------------------
+# Parametri imposti dal protocollo del pannello: 9600 8N1.
+uart:
+  tx_pin: D1
+  rx_pin: D2
+  baud_rate: 9600
+  stop_bits: 1
+  data_bits: 8
+  parity: NONE
+
+modbus:
+
+modbus_controller:
+  - id: airleaf
+    address: ${adr}
+    update_interval: ${upti}
+    # Pausa fra comandi consecutivi: il pannello non regge raffiche piu' fitte.
+    command_throttle: 100ms
+    setup_priority: -10
+
+# --- Componente climate ------------------------------------------------------
+# Il termostato di ESPHome fa da facciata verso Home Assistant: non regola nulla
+# da solo, ma traduce le richieste dell'utente in scritture sui registri del
+# pannello, e viceversa riflette in HA cio' che viene fatto dal pannello a muro.
+climate:
+  - platform: thermostat
+    name: "${devicename} Termostato"
+    id: airleaf_climate
+    sensor: air_temperature
+    set_point_minimum_differential: 5
+    visual:
+      temperature_step: 0.5
+
+    # Le azioni caldo/freddo/idle sono solo tracciate a log: a comandare la
+    # macchina e' il pannello, non la logica di regolazione di ESPHome.
+    cool_action:
+      - logger.log: "Cooling activated"
+    min_cooling_off_time: 1s
+    min_cooling_run_time: 1s
+
+    heat_action:
+      - logger.log: "Heating activated"
+    min_heating_off_time: 1s
+    min_heating_run_time: 1s
+
+    idle_action:
+      - logger.log: "Idle activated"
+    min_idle_time: 1s
+
+    # Spegnimento: mette la ventola in standby sul dispositivo.
+    # La guardia su boot_sync_done impedisce che l'OFF applicato all'avvio (vedi
+    # default_preset) venga scritto sul bus prima di conoscere lo stato reale.
+    off_mode:
+      - if:
+          condition:
+            lambda: 'return id(boot_sync_done) && id(fan_mode).current_option() != "Standby";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Standby"
+
+    # Accensione in riscaldamento: se la macchina era in standby la si riattiva
+    # con la velocita' salvata in flash, poi si imposta la stagione invernale.
+    heat_mode:
+      - if:
+          condition:
+            lambda: 'return id(boot_sync_done) && id(fan_mode).current_option() == "Standby";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: !lambda |-
+                  switch (id(desired_speed)) {
+                    case 1:  return std::string("Low");
+                    case 2:  return std::string("Notte");
+                    case 3:  return std::string("High");
+                    default: return std::string("Auto");
+                  }
+      - if:
+          condition:
+            lambda: 'return id(season).current_option() != "Inverno";'
+          then:
+            - select.set:
+                id: season
+                option: "Inverno"
+
+    # Idem per il raffrescamento.
+    cool_mode:
+      - if:
+          condition:
+            lambda: 'return id(boot_sync_done) && id(fan_mode).current_option() == "Standby";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: !lambda |-
+                  switch (id(desired_speed)) {
+                    case 1:  return std::string("Low");
+                    case 2:  return std::string("Notte");
+                    case 3:  return std::string("High");
+                    default: return std::string("Auto");
+                  }
+      - if:
+          condition:
+            lambda: 'return id(season).current_option() != "Estate";'
+          then:
+            - select.set:
+                id: season
+                option: "Estate"
+
+    # Cambio velocita' dalla card di Home Assistant. Ogni azione verifica prima
+    # il valore corrente per non generare scritture Modbus inutili: questi
+    # trigger si ripetono ad ogni pubblicazione, non solo quando il valore cambia.
+    fan_mode_auto_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).current_option() != "Auto";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Auto"
+    fan_mode_quiet_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).current_option() != "Notte";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Notte"
+    fan_mode_low_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).current_option() != "Low";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "Low"
+    fan_mode_high_action:
+      - if:
+          condition:
+            lambda: 'return id(fan_mode).current_option() != "High";'
+          then:
+            - select.set:
+                id: fan_mode
+                option: "High"
+    min_fan_mode_switching_time: 1s
+
+    # Il climate espone due setpoint (low/high) mentre il pannello ne ha uno
+    # solo: si propaga quello attivo in base alla stagione corrente.
+    target_temperature_change_action:
+      - if:
+          condition:
+            lambda: "return id(airleaf_climate).mode == CLIMATE_MODE_COOL && id(airleaf_climate).target_temperature_high != id(target_temperature).state;"
+          then:
+            - number.set:
+                id: target_temperature
+                value: !lambda "return id(airleaf_climate).target_temperature_high;"
+      - if:
+          condition:
+            lambda: "return id(airleaf_climate).mode == CLIMATE_MODE_HEAT && id(airleaf_climate).target_temperature_low != id(target_temperature).state;"
+          then:
+            - number.set:
+                id: target_temperature
+                value: !lambda "return id(airleaf_climate).target_temperature_low;"
+
+    # All'avvio non si ripristina da "memory": la memoria del componente climate
+    # puo' essere disallineata rispetto alla macchina. Si parte da OFF e sono le
+    # letture dei registri (ventola 201 e stagione 233) a ricostruire lo stato
+    # vero entro il primo ciclo di polling. Grazie a boot_sync_done questo OFF
+    # iniziale resta interno e non viene mai scritto sul bus.
+    default_preset: "Avvio"
+    on_boot_restore_from: default_preset
+    preset:
+      - name: "Avvio"
+        mode: "OFF"
+        default_target_temperature_low: 20 °C
+        default_target_temperature_high: 25 °C
+
+sensor:
+  - platform: wifi_signal
+    name: ${devicename} Segnale
+    update_interval: 60s
+
+  # Temperatura ambiente letta dalla sonda del pannello: e' la sorgente del
+  # componente climate.
+  - platform: modbus_controller
+    name: ${devicename} Temperatura Attuale
+    id: air_temperature
+    register_type: read
+    address: 0
+    # Isola la lettura per non accorpare il registro 1 nello stesso range.
+    force_new_range: true
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    value_type: U_WORD
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+binary_sensor:
+  # Standby dichiarato dal pannello (registro STAT 104, bit 11). Utile per
+  # confrontarlo con quanto si deduce dal registro 201 quando qualcosa non torna.
+  - platform: modbus_controller
+    name: ${devicename} Standby (STAT)
+    entity_category: diagnostic
+    register_type: read
+    address: 104
+    bitmask: 0x800
+    skip_updates: 3
+
+text_sensor:
+  # Flag di stato del regolatore, decodificate nelle voci piu' comuni.
+  # skip_updates alleggerisce il bus: questi valori cambiano di rado.
+  - platform: modbus_controller
+    name: ${devicename} Stati
+    icon: "mdi:flag"
+    entity_category: diagnostic
+    register_type: read
+    address: 104
+    force_new_range: true
+    skip_updates: 3
+    raw_encode: HEXBYTES
+    filters:
+      - lambda: |-
+          uint16_t value = modbus::helpers::word_from_hex_str(x, 0);
+          return to_string(value);
+      - map:
+          - 0 -> No flags
+          - 1 -> Cooling
+          - 2 -> Heating
+          - 16 -> Water T
+          - 64 -> Bad water
+          - 256 -> Away mode
+          - 512 -> Alarm
+          - 1024 -> Testing
+          - 2048 -> Standby
+          - 8192 -> H2 absent
+
+  # Flag di allarme del regolatore (registro 105).
+  - platform: modbus_controller
+    name: ${devicename} Allarme
+    icon: "mdi:alert-circle-outline"
+    entity_category: diagnostic
+    register_type: read
+    address: 105
+    skip_updates: 3
+    raw_encode: HEXBYTES
+    filters:
+      - lambda: |-
+          uint16_t value = modbus::helpers::word_from_hex_str(x, 0);
+          return to_string(value);
+      - map:
+          - 0 -> OK
+          - 1 -> Comm
+          - 2 -> Air probe
+          - 8 -> Bad water
+          - 16 -> Water probe
+          - 64 -> HiZ
+          - 128 -> Motor
+          - 256 -> Grid
+          - 512 -> Water T
+          - 1024 -> Filter
+
+number:
+  # Setpoint assoluto (registro 231), memorizzato dal pannello in decimi di grado.
+  - platform: modbus_controller
+    id: target_temperature
+    name: ${devicename} Temperatura Richiesta
+    mode: slider
+    icon: "mdi:thermometer"
+    entity_category: config
+    unit_of_measurement: "°C"
+    device_class: temperature
+    address: 231
+    value_type: U_WORD
+    min_value: 16.0
+    max_value: 28.0
+    step: 0.5
+    lambda: "return x * 0.1;"
+    write_lambda: "return x * 10;"
+    # Propaga al climate il setpoint cambiato dal pannello a muro, assegnandolo
+    # al limite giusto a seconda della stagione attiva.
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: "return id(airleaf_climate).mode == CLIMATE_MODE_COOL;"
+            then:
+              - climate.control:
+                  id: airleaf_climate
+                  target_temperature_high: !lambda "return x;"
+            else:
+              - climate.control:
+                  id: airleaf_climate
+                  target_temperature_low: !lambda "return x;"
+
+  # Indirizzo Modbus del pannello: praticamente immutabile, quindi letto di rado.
+  - platform: modbus_controller
+    name: ${devicename} Indirizzo Modbus
+    mode: box
+    icon: "mdi:id-card"
+    entity_category: config
+    address: 200
+    force_new_range: true
+    skip_updates: 5
+    value_type: U_WORD
+    min_value: 1
+    max_value: 255
+    step: 1
+    lambda: "return x;"
+    write_lambda: "return x;"
+
+  # Correzione della sonda aria (registro 242), in decimi di grado, con segno.
+  - platform: modbus_controller
+    name: ${devicename} Offset Temperatura Ambiente
+    mode: box
+    icon: "mdi:compare-vertical"
+    entity_category: config
+    address: 242
+    force_new_range: true
+    skip_updates: 3
+    value_type: S_WORD
+    min_value: -12
+    max_value: 12
+    step: 0.1
+    lambda: "return x * 0.1;"
+    write_lambda: "return x * 10;"
+
+select:
+  # --- Velocita' ventola / standby (registro 201, PRG) -----------------------
+  # Registro di FLAG, non di valori alternativi:
+  #   bit 0-1  velocita' (0 Auto / 1 Silenzioso / 2 Notturno / 3 Massimo)
+  #   bit 4    LOCK, tastiera del pannello bloccata
+  #   bit 7    Stby, macchina in standby
+  #   bit 8-15 riservate di sistema, da non modificare
+  # Va quindi decodificato bit a bit in lettura e aggiornato in read-modify-write
+  # in scrittura. L'optionsmap resta obbligatorio per lo schema, ma i valori
+  # effettivi li calcolano le due lambda qui sotto.
+  - platform: modbus_controller
+    name: ${devicename} Velocità Ventola
+    id: fan_mode
+    icon: "mdi:fan"
+    entity_category: config
+    address: 201
+    force_new_range: true
+    value_type: U_WORD
+    optionsmap:
+      "Auto": 0
+      "Low": 1
+      "Notte": 2
+      "High": 3
+      "Standby": 128
+    # Lettura: memorizza il valore grezzo (serve alla scrittura) e riporta lo
+    # standby con precedenza sulla velocita'.
+    lambda: |-
+      id(prg_raw) = (uint16_t) x;
+      if (x & 0x0080) {
+        return std::string("Standby");
+      }
+      switch (x & 0x0003) {
+        case 1:  return std::string("Low");
+        case 2:  return std::string("Notte");
+        case 3:  return std::string("High");
+        default: return std::string("Auto");
+      }
+    # Scrittura: parte sempre dall'ultimo valore letto e tocca solo i bit
+    # necessari. La maschera 0xFF7C azzera i soli bit 0, 1 e 7, preservando LOCK
+    # e i bit riservati che il manuale impone di non alterare.
+    write_lambda: |-
+      uint16_t raw = id(prg_raw);
+      uint16_t out;
+      if (id(boot_restore)) {
+        id(boot_restore) = false;
+        out = (uint16_t) ((raw & 0xFF7C)
+                          | (id(desired_on) ? 0x0000 : 0x0080)
+                          | id(desired_speed));
+      } else if (x == "Standby") {
+        out = raw | 0x0080;
+      } else {
+        uint16_t prg = 0;
+        if (x == "Low")        prg = 1;
+        else if (x == "Notte") prg = 2;
+        else if (x == "High")  prg = 3;
+        out = (uint16_t) ((raw & 0xFF7C) | prg);
+      }
+      ESP_LOGD("main", "PRG 201: 0x%04X -> 0x%04X (%s)", raw, out, x.c_str());
+      return (int64_t) out;
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return !id(boot_sync_done);'
+            then:
+              # Prima lettura dopo il boot: da qui in poi lo stato fisico e' noto
+              # e le azioni del climate possono tornare a scrivere sul bus.
+              - lambda: 'id(boot_sync_done) = true;'
+              # Riconciliazione: se quanto letto non coincide con lo stato salvato
+              # in flash, lo si riscrive con una sola operazione (accensione e
+              # velocita' insieme, per non lasciare stati intermedi sul bus).
+              - if:
+                  condition:
+                    lambda: |-
+                      uint16_t raw = id(prg_raw);
+                      uint16_t want = (uint16_t) ((raw & 0xFF7C)
+                                                  | (id(desired_on) ? 0x0000 : 0x0080)
+                                                  | id(desired_speed));
+                      return want != raw;
+                  then:
+                    - logger.log: "Boot: ripristino stato e velocita' salvati"
+                    - lambda: 'id(boot_restore) = true;'
+                    - select.set:
+                        id: fan_mode
+                        option: !lambda |-
+                          switch (id(desired_speed)) {
+                            case 1:  return std::string("Low");
+                            case 2:  return std::string("Notte");
+                            case 3:  return std::string("High");
+                            default: return std::string("Auto");
+                          }
+            else:
+              # Regime normale: ogni cambio reale, da Home Assistant o dal
+              # pannello, aggiorna in flash lo stato e la velocita' voluti.
+              - lambda: |-
+                  id(desired_on) = (x != "Standby");
+                  if (x != "Standby") {
+                    id(desired_speed) = (uint8_t) (id(prg_raw) & 0x0003);
+                  }
+        - if:
+            condition:
+              lambda: 'return x == "Standby";'
+            then:
+              # Spegnimento avvenuto sul dispositivo: va riflesso sulla Mode del
+              # climate, altrimenti Home Assistant continuerebbe a mostrare
+              # Heat/Cool su una macchina ferma.
+              - if:
+                  condition:
+                    lambda: 'return id(airleaf_climate).mode != CLIMATE_MODE_OFF;'
+                  then:
+                    - climate.control:
+                        id: airleaf_climate
+                        mode: "OFF"
+            else:
+              # Standby escluso di proposito: CLIMATE_FAN_OFF non e' fra i fan
+              # mode supportati e verrebbe scartato con un warning.
+              - climate.control:
+                  id: airleaf_climate
+                  fan_mode: !lambda |-
+                    static std::map<std::string, climate::ClimateFanMode> mode_map {
+                      {"Auto", CLIMATE_FAN_AUTO},
+                      {"Low", CLIMATE_FAN_LOW},
+                      {"Notte", CLIMATE_FAN_QUIET},
+                      {"High", CLIMATE_FAN_HIGH}
+                    };
+                    return mode_map[x];
+
+  # --- Stagione (registro 233) -----------------------------------------------
+  - platform: modbus_controller
+    name: ${devicename} Stagione
+    id: season
+    icon: "mdi:sun-snowflake"
+    entity_category: config
+    address: 233
+    force_new_range: true
+    value_type: U_WORD
+    optionsmap:
+      "Inverno": 3
+      "Estate": 5
+    # Il registro stagione non ha un valore "spento": senza la guardia su
+    # standby, la sua ripubblicazione ad ogni ciclo di polling riaccenderebbe il
+    # climate. boot_sync_done copre inoltre il caso in cui questa lettura arrivi
+    # prima di quella della ventola, quando lo stato reale e' ancora ignoto.
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(boot_sync_done) && id(fan_mode).current_option() != "Standby";'
+            then:
+              - climate.control:
+                  id: airleaf_climate
+                  mode: !lambda |-
+                    static std::map<std::string, climate::ClimateMode> mode_map {
+                      {"Inverno", CLIMATE_MODE_HEAT},
+                      {"Estate", CLIMATE_MODE_COOL}
+                    };
+                    return mode_map[x];
+
+switch:
+  # Interruttore di accensione: lo stato deriva dalla ventola, non e' memorizzato
+  # a parte. Finche' la prima lettura non e' arrivata mostra OFF, per non
+  # esporre un ON fittizio dovuto al valore ancora vuoto.
+  - platform: template
+    name: ${devicename} Accensione
+    id: standby_switch
+    icon: "mdi:power-standby"
+    entity_category: config
+    lambda: |-
+      return id(boot_sync_done) && id(fan_mode).current_option() != "Standby";
+
+    turn_off_action:
+      - select.set:
+          id: fan_mode
+          option: "Standby"
+      - climate.control:
+          id: airleaf_climate
+          mode: "OFF"
+
+    turn_on_action:
+      # Riaccende con la velocita' salvata in flash e allinea la modalita' del
+      # climate alla stagione impostata sul pannello.
+      - select.set:
+          id: fan_mode
+          option: !lambda |-
+            switch (id(desired_speed)) {
+              case 1:  return std::string("Low");
+              case 2:  return std::string("Notte");
+              case 3:  return std::string("High");
+              default: return std::string("Auto");
+            }
+      - climate.control:
+          id: airleaf_climate
+          mode: !lambda |-
+            if (id(season).current_option() == "Inverno") {
+              return CLIMATE_MODE_HEAT;
+            } else {
+              return CLIMATE_MODE_COOL;
+            }
+
+  # Scorciatoia per la modalita' notturna, comoda nelle automazioni.
+  - platform: template
+    name: ${devicename} Modo Notte
+    icon: "mdi:weather-night"
+    lambda: |-
+      auto val = id(fan_mode).current_option();
+      return val == "Notte";
+    turn_on_action:
+      - select.set:
+          id: fan_mode
+          option: "Notte"
+    turn_off_action:
+      - select.set:
+          id: fan_mode
+          option: "Auto"
+
+button:
+  - platform: restart
+    name: ${devicename} Restart
+
+# --- Stato interno -----------------------------------------------------------
+globals:
+  # Falso finche' non arriva la prima lettura del registro 201 in questo avvio.
+  # Fa da interruttore generale sulle scritture: finche' lo stato fisico della
+  # macchina e' ignoto, nessuna azione del climate puo' toccare il bus.
+  - id: boot_sync_done
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # Ultimo valore grezzo del registro 201, base per ogni read-modify-write.
+  - id: prg_raw
+    type: uint16_t
+    restore_value: false
+    initial_value: '0'
+
+  # Valido per una sola scrittura: fa ignorare alla write_lambda l'opzione
+  # richiesta, per riscrivere in un colpo solo standby e velocita' voluti.
+  - id: boot_restore
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  # Velocita' voluta (0 Auto, 1 Low, 2 Notte, 3 High), salvata in flash.
+  # Il pannello azzera i bit 0-1 quando il master Modbus si riavvia, quindi dopo
+  # un boot il registro non e' piu' una fonte attendibile: questa lo e'.
+  - id: desired_speed
+    type: uint8_t
+    restore_value: true
+    initial_value: '0'
+
+  # Acceso/spento voluto dall'utente, salvato in flash. Il pannello esce da solo
+  # dallo standby quando perde la comunicazione durante il riavvio dell'ESP:
+  # questo valore permette di rimetterlo come deve stare.
+  - id: desired_on
+    type: bool
+    restore_value: true
+    initial_value: 'false'
