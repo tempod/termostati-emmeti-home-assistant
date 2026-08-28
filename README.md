@@ -91,8 +91,7 @@ substitutions:
 In fondo alla sezione `logger` c'è un blocco syslog commentato. Scommentandolo,
 il dispositivo invia i log via UDP al
 [Syslog Receiver](https://github.com/zollak/homeassistant-syslog-receiver) di
-Home Assistant. La porta è univoca per dispositivo (`5` + ultimo ottetto
-dell'IP), così ogni termostato finisce in un'istanza separata e i log restano
+Home Assistant. La porta è univoca per dispositivo (`5` + ultimo terzetto dell'IP), così ogni termostato finisce in un'istanza separata e i log restano
 distinti senza bisogno di filtrare per indirizzo sorgente.
 
 Serve soprattutto per diagnosticare eventi che accadono mentre nessuno guarda —
